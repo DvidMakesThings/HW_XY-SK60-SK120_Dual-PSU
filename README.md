@@ -3,7 +3,7 @@
 **Open-source remote control and automation system for dual Sinilink XY-SK60/SK120 buck-boost power supplies — built around a Luckfox RV1106 SoC in a 10-inch 1U rack enclosure.**
 
 [![License: AGPL v3](https://img.shields.io/badge/Software-AGPL%20v3-blue.svg)](LICENSE-AGPL)
-[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/Hardware-CC%20BY--NC--SA%204.0-lightgrey.svg)](LICENSE-CC-BY-NC-SA)
+[![License: CC BY-NC-SA 4.0](https://img.shields.io/badge/Hardware-CC%20BY--NC--SA%204.0-blue.svg)](LICENSE-CC-BY-NC-SA)
 
 ---
 
