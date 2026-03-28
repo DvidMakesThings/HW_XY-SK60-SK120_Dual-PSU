@@ -31,6 +31,20 @@
                     </span>
                     <span class="pill" id="pillStatus">LIVE</span>
                 </button>
+                <button data-route="sweep">
+                    <span>
+                        <div style="font-weight:600; font-size:13px;">Sweep</div>
+                        <div class="meta">Timed voltage sequences</div>
+                    </span>
+                    <span class="pill">SEQ</span>
+                </button>
+                <button data-route="datalogger">
+                    <span>
+                        <div style="font-weight:600; font-size:13px;">Datalogger</div>
+                        <div class="meta">Graphs &amp; CSV export</div>
+                    </span>
+                    <span class="pill" id="pillLog">LOG</span>
+                </button>
                 <button data-route="protection">
                     <span>
                         <div style="font-weight:600; font-size:13px;">Protection</div>
@@ -103,6 +117,27 @@
                     </div>
                 </div>
             </div>
+            <div style="height:14px;"></div>
+
+            <div class="card dl-sidebar-group">
+                <div class="inner" style="padding:12px 14px;">
+                    <div style="font-size:11px; font-weight:600; letter-spacing:.6px; color:var(--muted); text-transform:uppercase; margin-bottom:10px;">Data Logging</div>
+                    <div class="dl-toggle-row">
+                        <div>
+                            <div style="font-size:13px; font-weight:600;" id="dlLabelA">PSU-A</div>
+                            <div style="font-size:11px; color:var(--muted);" id="dlStatusA">Stopped</div>
+                        </div>
+                        <div class="switch" id="dlSwitchA" data-dl-toggle="a"><span class="knob"></span></div>
+                    </div>
+                    <div class="dl-toggle-row" style="margin-top:8px;">
+                        <div>
+                            <div style="font-size:13px; font-weight:600;" id="dlLabelB">PSU-B</div>
+                            <div style="font-size:11px; color:var(--muted);" id="dlStatusB">Stopped</div>
+                        </div>
+                        <div class="switch" id="dlSwitchB" data-dl-toggle="b"><span class="knob"></span></div>
+                    </div>
+                </div>
+            </div>
         </aside>
 
         <div class="content">
@@ -137,6 +172,40 @@
                     </div>
 
                     <div class="grid channels" id="psuGrid"></div>
+                </section>
+
+                <!-- ===== SWEEP PANEL ===== -->
+                <section class="panel" id="panel-sweep">
+                    <div class="card">
+                        <div class="inner">
+                            <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+                                <div>
+                                    <div style="font-size:12px; color:var(--muted);">Voltage Sweep</div>
+                                    <div style="margin-top:6px; font-size:16px; letter-spacing:.2px;">Timed voltage sequences</div>
+                                </div>
+                                <p class="note" style="margin:0; max-width:480px;">Define waypoints as (time ms, voltage V) pairs. The PSU output voltage steps to each value at the specified elapsed time. Click <b>Save</b> to upload the program, then <b>Start Sweep</b> to run it.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="height:14px;"></div>
+                    <div class="sweep-grid" id="sweepGrid"></div>
+                </section>
+
+                <!-- ===== DATALOGGER PANEL ===== -->
+                <section class="panel" id="panel-datalogger">
+                    <div class="card">
+                        <div class="inner">
+                            <div style="display:flex; align-items:flex-start; justify-content:space-between; gap:12px; flex-wrap:wrap;">
+                                <div>
+                                    <div style="font-size:12px; color:var(--muted);">Data Logger</div>
+                                    <div style="margin-top:6px; font-size:16px; letter-spacing:.2px;">Voltage, current &amp; power over time</div>
+                                </div>
+                                <p class="note" style="margin:0; max-width:480px;">Enable logging via the sidebar switches. Each channel is logged independently. Download data as CSV or clear the buffer at any time.</p>
+                            </div>
+                        </div>
+                    </div>
+                    <div style="height:14px;"></div>
+                    <div id="dlGrid"></div>
                 </section>
 
                 <!-- ===== PROTECTION PANEL ===== -->

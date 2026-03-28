@@ -18,6 +18,17 @@
     var psuIds = [];
     var lastData = null;
     var startTime = Date.now();
+    var currentRoute = 'outputs';
+
+    // Sweep state
+    var sweepStatus = {};           // psu_id -> {running, elapsed_ms, current_step}
+    var localSweepPrograms = {};    // psu_id -> [{time_ms, voltage}]  (user-edited, not yet saved)
+    var sweepProgramsSynced = {};   // psu_id -> bool (has local copy been loaded from backend?)
+
+    // Datalogger state
+    var dlStatus = {};              // psu_id -> {enabled, interval_ms, samples}
+    var dlPollTimer = null;
+    var dlSamplesCache = {};        // canvasId -> {samples, field, color}
 
     // SVG icons
     var chevSvg = '<div class="chev" aria-hidden="true"><svg width="16" height="16" viewBox="0 0 24 24" fill="none"><path d="M6 9l6 6 6-6" stroke="rgba(234,240,255,.85)" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>';
@@ -26,6 +37,8 @@
 
     var routes = {
         outputs: { title: 'Outputs', crumb: 'PSU Controller / Outputs' },
+        sweep: { title: 'Sweep', crumb: 'PSU Controller / Sweep' },
+        datalogger: { title: 'Datalogger', crumb: 'PSU Controller / Datalogger' },
         protection: { title: 'Protection', crumb: 'PSU Controller / Protection' },
         settings: { title: 'Settings', crumb: 'PSU Controller / Settings' },
         info: { title: 'System', crumb: 'PSU Controller / System' },
@@ -45,9 +58,13 @@
             if (route === 'protection') renderProtection(lastData);
             if (route === 'settings') renderSettings(lastData);
             if (route === 'info') renderInfo(lastData);
+            if (route === 'sweep') fetchSweepAndRender();
         }
         if (route === 'api-docs') renderApiDocs();
         if (route === 'snmp-docs') renderSnmpDocs();
+        if (route === 'datalogger') startDlPoll();
+        else stopDlPoll();
+        currentRoute = route;
     }
 
     // ==================== KPI CARDS ====================
@@ -90,68 +107,101 @@
 
     // ==================== PSU CHANNEL CARDS ====================
 
+    function chipsHtml(d) {
+        return '<span class="chip"><b>Vin</b> <span class="tag">' + fmt(d.v_in, 2) + ' V</span></span>' +
+            '<span class="chip"><b>Temp</b> <span class="tag">' + fmt(d.temp_int, 1) + ' C</span></span>' +
+            '<span class="chip"><b>Lock</b> <span class="tag">' + (d.lock ? 'ON' : 'off') + '</span></span>' +
+            '<span class="chip"><b>Energy</b> <span class="tag">' + (d.ah || 0) + 'mAh / ' + (d.wh || 0) + 'mWh</span></span>' +
+            (d.protect ? '<span class="chip" style="border-color:rgba(255,77,109,.35);color:var(--bad);"><b>PROTECT</b> <span class="tag">' + d.protect + '</span></span>' : '');
+    }
+
     function psuCard(id, d) {
         var on = d.output_on;
-        var v = fmt(d.v_out, 2); var i = fmt(d.i_out, 3); var p = fmt(d.power, 2);
         var isCC = d.cvcc === 1;
-        var modeStr = isCC ? 'CC' : 'CV';
-        var modeClass = isCC ? 'i-color' : 'v-color';
         var stateDot = on ? (d.protect ? 'warn' : 'good') : '';
         var upSec = (d.out_hours || 0) * 3600 + (d.out_mins || 0) * 60 + (d.out_secs || 0);
 
         return '<div class="channel-card" data-psu="' + id + '">' +
-            // Header row: name + power button
             '<div class="ch-header">' +
-            '<div class="ch-name"><span class="dot ' + stateDot + '"></span>' +
+            '<div class="ch-name"><span class="dot ' + stateDot + '" data-live="dot"></span>' +
             '<div class="title"><strong>' + (d.name || ('PSU-' + id.toUpperCase())) + '</strong>' +
-            '<span>' + (on ? modeStr + ' mode' : 'Standby') + ' &middot; ' + uptimeStr(upSec) + '</span></div></div>' +
-            '<button class="pwr-btn ' + (on ? 'on' : '') + '" data-act="toggle-output" data-psu="' + id + '">' + (on ? 'ON' : 'OFF') + '</button>' +
+            '<span data-live="mode">' + (on ? (isCC ? 'CC' : 'CV') + ' mode' : 'Standby') + ' \u00B7 ' + uptimeStr(upSec) + '</span></div></div>' +
+            '<button class="pwr-btn ' + (on ? 'on' : '') + '" data-live="pwrbtn" data-act="toggle-output" data-psu="' + id + '">' + (on ? 'ON' : 'OFF') + '</button>' +
             '</div>' +
-            // Big readings row
             '<div class="ch-readings">' +
-            '<div class="ch-big"><div class="ch-big-val v-color">' + v + '</div><div class="ch-big-unit">V</div><div class="ch-big-label">Output</div></div>' +
-            '<div class="ch-big"><div class="ch-big-val i-color">' + i + '</div><div class="ch-big-unit">A</div><div class="ch-big-label">Current</div></div>' +
-            '<div class="ch-big"><div class="ch-big-val p-color">' + p + '</div><div class="ch-big-unit">W</div><div class="ch-big-label">Power</div></div>' +
+            '<div class="ch-big"><div class="ch-big-val v-color" data-live="vout">' + fmt(d.v_out, 2) + '</div><div class="ch-big-unit">V</div><div class="ch-big-label">Output</div></div>' +
+            '<div class="ch-big"><div class="ch-big-val i-color" data-live="iout">' + fmt(d.i_out, 3) + '</div><div class="ch-big-unit">A</div><div class="ch-big-label">Current</div></div>' +
+            '<div class="ch-big"><div class="ch-big-val p-color" data-live="pout">' + fmt(d.power, 2) + '</div><div class="ch-big-unit">W</div><div class="ch-big-label">Power</div></div>' +
             '</div>' +
-            // Quick controls row - always visible
             '<div class="ch-controls">' +
             '<div class="ch-ctrl">' +
             '<label>Set Voltage (V)</label>' +
-            '<div class="input-row-inline"><input type="number" step="0.01" min="0" max="60" data-inp="voltage" data-psu="' + id + '" placeholder="' + fmt(d.v_set, 2) + '"/>' +
+            '<div class="input-row-inline"><input type="text" inputmode="decimal" data-inp="voltage" data-psu="' + id + '" placeholder="' + fmt(d.v_set, 2) + '"/>' +
             '<button class="btn" data-act="set-voltage" data-psu="' + id + '">Set</button></div>' +
             '</div>' +
             '<div class="ch-ctrl">' +
             '<label>Set Current (A)</label>' +
-            '<div class="input-row-inline"><input type="number" step="0.001" min="0" max="6" data-inp="current" data-psu="' + id + '" placeholder="' + fmt(d.i_set, 3) + '"/>' +
+            '<div class="input-row-inline"><input type="text" inputmode="decimal" data-inp="current" data-psu="' + id + '" placeholder="' + fmt(d.i_set, 3) + '"/>' +
             '<button class="btn" data-act="set-current" data-psu="' + id + '">Set</button></div>' +
             '</div>' +
             '</div>' +
-            // Secondary info chips
-            '<div class="ch-info">' +
-            '<span class="chip"><b>Vin</b> <span class="tag">' + fmt(d.v_in, 2) + ' V</span></span>' +
-            '<span class="chip"><b>Temp</b> <span class="tag">' + fmt(d.temp_int, 1) + ' C</span></span>' +
-            '<span class="chip"><b>Lock</b> <span class="tag">' + (d.lock ? 'ON' : 'off') + '</span></span>' +
-            '<span class="chip"><b>Energy</b> <span class="tag">' + (d.ah || 0) + 'mAh / ' + (d.wh || 0) + 'mWh</span></span>' +
-            (d.protect ? '<span class="chip" style="border-color:rgba(255,77,109,.35);color:var(--bad);"><b>PROTECT</b> <span class="tag">' + d.protect + '</span></span>' : '') +
-            '</div>' +
+            '<div class="ch-info" data-live="chips">' + chipsHtml(d) + '</div>' +
             '</div>';
+    }
+
+    function updateCardLive(card, id, d) {
+        var on = d.output_on;
+        var isCC = d.cvcc === 1;
+        var stateDot = on ? (d.protect ? 'warn' : 'good') : '';
+        var upSec = (d.out_hours || 0) * 3600 + (d.out_mins || 0) * 60 + (d.out_secs || 0);
+
+        var el;
+        el = card.querySelector('[data-live="dot"]');
+        if (el) el.className = 'dot ' + stateDot;
+
+        el = card.querySelector('[data-live="mode"]');
+        if (el) el.textContent = (on ? (isCC ? 'CC' : 'CV') + ' mode' : 'Standby') + ' \u00B7 ' + uptimeStr(upSec);
+
+        el = card.querySelector('[data-live="pwrbtn"]');
+        if (el) { el.className = 'pwr-btn ' + (on ? 'on' : ''); el.textContent = on ? 'ON' : 'OFF'; }
+
+        el = card.querySelector('[data-live="vout"]');
+        if (el) el.textContent = fmt(d.v_out, 2);
+        el = card.querySelector('[data-live="iout"]');
+        if (el) el.textContent = fmt(d.i_out, 3);
+        el = card.querySelector('[data-live="pout"]');
+        if (el) el.textContent = fmt(d.power, 2);
+
+        // Update placeholders only (never touch .value — user may be typing)
+        el = card.querySelector('input[data-inp="voltage"]');
+        if (el) el.placeholder = fmt(d.v_set, 2);
+        el = card.querySelector('input[data-inp="current"]');
+        if (el) el.placeholder = fmt(d.i_set, 3);
+
+        el = card.querySelector('[data-live="chips"]');
+        if (el) el.innerHTML = chipsHtml(d);
     }
 
     function renderChannels(data) {
         var grid = $('#psuGrid'); if (!grid) return;
-        var html = '';
-        Object.keys(data).forEach(function (id) { html += psuCard(id, data[id]); });
-        // Save focused input before replacing DOM
-        var focused = document.activeElement;
-        var focusInp = focused && focused.getAttribute('data-inp');
-        var focusPsu = focused && focused.getAttribute('data-psu');
-        var focusVal = focused && focused.value;
-        grid.innerHTML = html;
-        // Restore focus and value if user was typing
-        if (focusInp && focusPsu) {
-            var el = grid.querySelector('[data-inp="' + focusInp + '"][data-psu="' + focusPsu + '"]');
-            if (el) { el.value = focusVal || ''; el.focus(); }
-        }
+
+        // In-place update: never rebuild the card DOM, only patch display elements.
+        // This preserves input focus, cursor position, and text selection across polls.
+        Object.keys(data).forEach(function (id) {
+            var card = grid.querySelector('.channel-card[data-psu="' + id + '"]');
+            if (!card) {
+                var tmp = document.createElement('div');
+                tmp.innerHTML = psuCard(id, data[id]);
+                grid.appendChild(tmp.firstChild);
+            } else {
+                updateCardLive(card, id, data[id]);
+            }
+        });
+
+        // Remove stale cards
+        $$('.channel-card', grid).forEach(function (card) {
+            if (!data[card.getAttribute('data-psu')]) card.remove();
+        });
     }
 
     // ==================== PROTECTION PANEL ====================
@@ -210,6 +260,368 @@
                 '<div class="help">Erases all settings on this PSU. Cannot be undone.</div></div>';
         });
         grid.innerHTML = html;
+    }
+
+    // ==================== SWEEP PANEL ====================
+
+    function renderSweep() {
+        var grid = $('#sweepGrid'); if (!grid || !lastData) return;
+        var ids = Object.keys(lastData);
+        var html = '';
+        ids.forEach(function (id) {
+            var psu = lastData[id];
+            var prog = localSweepPrograms[id] || [];
+            var st = sweepStatus[id] || { running: false, elapsed_ms: 0, current_step: -1 };
+            var running = st.running;
+            var psuName = psu.name || ('PSU-' + id.toUpperCase());
+
+            html += '<div class="sweep-col">';
+            // Header
+            html += '<div class="sweep-col-header"><span>' + psuName + '</span>';
+            html += running
+                ? '<span class="sweep-status running">Running &bull; ' + st.elapsed_ms + ' ms</span>'
+                : '<span class="sweep-status">Idle</span>';
+            html += '</div>';
+            // Controls (top)
+            html += '<div class="sweep-controls">' +
+                '<button class="btn" data-act="sweep-add-row" data-psu="' + id + '">+ Voltage</button>' +
+                '<button class="btn" style="color:var(--good);border-color:rgba(62,245,154,.25);" data-act="sweep-add-output" data-psu="' + id + '" data-output="true">+ Enable Output</button>' +
+                '<button class="btn" style="color:var(--bad);border-color:rgba(255,77,109,.25);" data-act="sweep-add-output" data-psu="' + id + '" data-output="false">+ Disable Output</button>' +
+                '<button class="btn primary" data-act="sweep-save" data-psu="' + id + '">Save Program</button>' +
+                '</div>';
+            // Table
+            html += '<div class="sweep-table-wrap">';
+            html += '<table class="sweep-table"><thead><tr><th style="width:90px;">Time (ms)</th><th>Action</th><th style="width:28px;"></th></tr></thead><tbody>';
+            prog.forEach(function (pt, idx) {
+                var timeInp = '<input class="sweep-inp" type="number" step="1" min="0" style="width:82px;" data-sp-psu="' + id + '" data-sp-row="' + idx + '" data-sp-field="time_ms" value="' + pt.time_ms + '"/>';
+                var delBtn = '<button class="sweep-del" data-act="sweep-del-row" data-psu="' + id + '" data-row="' + idx + '" title="Remove">&#x2715;</button>';
+                if ('output' in pt) {
+                    var outOn = pt.output;
+                    var badge = '<span class="pill" style="font-size:11px;font-family:var(--mono);color:' +
+                        (outOn ? 'var(--good)' : 'var(--bad)') + ';border-color:' +
+                        (outOn ? 'rgba(62,245,154,.3)' : 'rgba(255,77,109,.3)') + ';background:' +
+                        (outOn ? 'rgba(62,245,154,.08)' : 'rgba(255,77,109,.08)') + ';">OUTPUT ' +
+                        (outOn ? 'ON' : 'OFF') + '</span>';
+                    html += '<tr><td>' + timeInp + '</td><td style="padding:3px 8px;">' + badge + '</td><td>' + delBtn + '</td></tr>';
+                } else {
+                    var vInp = '<input class="sweep-inp" type="number" step="0.01" min="0" max="60" style="width:82px;" data-sp-psu="' + id + '" data-sp-row="' + idx + '" data-sp-field="voltage" value="' + pt.voltage + '"/> <span style="font-size:11px;color:var(--muted);">V</span>';
+                    html += '<tr><td>' + timeInp + '</td><td>' + vInp + '</td><td>' + delBtn + '</td></tr>';
+                }
+            });
+            html += '</tbody></table>';
+            html += '</div>';
+            // Run row
+            html += '<div class="sweep-run-row">';
+            if (running) {
+                html += '<button class="btn danger" data-act="sweep-stop" data-psu="' + id + '">&#9632; Stop Sweep</button>';
+                html += '<span class="chip"><b>Step</b> <span class="tag">' + (st.current_step + 1) + ' / ' + prog.length + '</span></span>';
+            } else {
+                html += '<button class="btn primary" data-act="sweep-start" data-psu="' + id + '">&#9654; Start Sweep</button>';
+                if (prog.length === 0) {
+                    html += '<span style="font-size:12px;color:var(--muted);">Add waypoints to enable</span>';
+                }
+            }
+            html += '</div>';
+            html += '</div>';
+        });
+        grid.innerHTML = html;
+
+        // Sync input changes back to local program state
+        $$('[data-sp-psu]').forEach(function (inp) {
+            inp.addEventListener('change', function () {
+                var pid = inp.getAttribute('data-sp-psu');
+                var row = parseInt(inp.getAttribute('data-sp-row'), 10);
+                var field = inp.getAttribute('data-sp-field');
+                if (localSweepPrograms[pid] && localSweepPrograms[pid][row] !== undefined) {
+                    var val = parseFloat(inp.value);
+                    localSweepPrograms[pid][row][field] = isNaN(val) ? 0 : (field === 'time_ms' ? Math.round(val) : val);
+                }
+            });
+        });
+    }
+
+    function fetchSweepAndRender() {
+        fetch('/api/sweep').then(function (r) { return r.json(); }).then(function (d) {
+            Object.keys(d).forEach(function (id) {
+                sweepStatus[id] = d[id].status;
+                // Only populate local copy once (don't overwrite user edits)
+                if (!sweepProgramsSynced[id]) {
+                    localSweepPrograms[id] = d[id].program.map(function (p) {
+                        // Preserve whichever fields exist (voltage / output)
+                        var wp = { time_ms: p.time_ms };
+                        if ('voltage' in p) wp.voltage = p.voltage;
+                        if ('output' in p) wp.output = p.output;
+                        return wp;
+                    });
+                    sweepProgramsSynced[id] = true;
+                }
+            });
+            renderSweep();
+        }).catch(function () { });
+    }
+
+    function pollSweepStatus() {
+        if (currentRoute !== 'sweep') return;
+        fetch('/api/sweep').then(function (r) { return r.json(); }).then(function (d) {
+            var changed = false;
+            Object.keys(d).forEach(function (id) {
+                var prev = sweepStatus[id] || {};
+                sweepStatus[id] = d[id].status;
+                if (prev.running !== d[id].status.running || prev.elapsed_ms !== d[id].status.elapsed_ms) changed = true;
+            });
+            if (changed) renderSweep();
+        }).catch(function () { });
+    }
+
+    // ==================== DATALOGGER PANEL ====================
+
+    function renderDatalogger() {
+        var grid = $('#dlGrid'); if (!grid || !lastData) return;
+        var ids = Object.keys(lastData);
+
+        var html = '<div class="dl-grid">';
+        ids.forEach(function (id) {
+            var psu = lastData[id];
+            var st = dlStatus[id] || { enabled: false, interval_ms: 500, samples: 0 };
+            var psuName = psu.name || ('PSU-' + id.toUpperCase());
+
+            html += '<div class="dl-psu-block">';
+            // Header
+            html += '<div class="dl-psu-header">' +
+                '<div class="dl-psu-title">' +
+                '<span class="dot ' + (st.enabled ? 'good' : '') + '"></span>' +
+                psuName +
+                '<span class="dl-psu-meta">' + st.samples + ' samples &bull; ' + st.interval_ms + ' ms/pt</span>' +
+                '</div>' +
+                '<div class="dl-actions">' +
+                '<button class="btn" data-act="dl-clear" data-psu="' + id + '">Clear</button>' +
+                '<a class="btn primary" href="/api/datalog/' + id + '/csv" download="psu_' + id + '_log.csv">&#8595; CSV</a>' +
+                '</div>' +
+                '</div>';
+            // Voltage graph
+            html += '<div class="dl-graph-label" style="color:var(--voltage);">Voltage (V)</div>';
+            html += '<div class="dl-canvas-wrap"><canvas class="dl-canvas" id="dlCanvasV_' + id + '"></canvas></div>';
+            // Current graph
+            html += '<div class="dl-graph-label" style="color:var(--current);">Current (A)</div>';
+            html += '<div class="dl-canvas-wrap"><canvas class="dl-canvas" id="dlCanvasI_' + id + '"></canvas></div>';
+            html += '</div>';
+        });
+        html += '</div>';
+
+        grid.innerHTML = html;
+        ids.forEach(function (id) { fetchAndDrawDl(id); });
+    }
+
+    function fetchAndDrawDl(psuId) {
+        fetch('/api/datalog/' + psuId).then(function (r) { return r.json(); }).then(function (d) {
+            dlStatus[psuId] = d.status;
+            updateDlSidebar();
+            var cvV = 'dlCanvasV_' + psuId;
+            var cvI = 'dlCanvasI_' + psuId;
+            dlSamplesCache[cvV] = { samples: d.samples, field: 'v', color: '#64D2FF' };
+            dlSamplesCache[cvI] = { samples: d.samples, field: 'i', color: '#FFC857' };
+            drawDlSeries(cvV, d.samples, 'v', '#64D2FF', null);
+            drawDlSeries(cvI, d.samples, 'i', '#FFC857', null);
+            attachDlHover(cvV);
+            attachDlHover(cvI);
+        }).catch(function () { });
+    }
+
+    function drawDlSeries(canvasId, samples, field, color, hover) {
+        var canvas = $('#' + canvasId);
+        if (!canvas) return;
+        var W = canvas.offsetWidth || 400;
+        var H = canvas.offsetHeight || 150;
+        canvas.width = W;
+        canvas.height = H;
+        var ctx = canvas.getContext('2d');
+        ctx.clearRect(0, 0, W, H);
+
+        if (!samples || samples.length < 2) {
+            ctx.fillStyle = 'rgba(234,240,255,0.22)';
+            ctx.font = '12px monospace';
+            ctx.textAlign = 'center';
+            ctx.fillText('No data — enable logging via sidebar switch', W / 2, H / 2);
+            return;
+        }
+
+        var ml = 46, mr = 8, mt = 8, mb = 22;
+        var gW = W - ml - mr;
+        var gH = H - mt - mb;
+        var maxT = samples[samples.length - 1].t || 1;
+
+        // Auto-scale Y: pad 10% above max, floor at 0
+        var vals = samples.map(function (s) { return s[field]; });
+        var dataMax = Math.max.apply(null, vals);
+        var dataMin = Math.min.apply(null, vals);
+        if (dataMax === dataMin) dataMax = dataMin + 0.001;
+        var yMin = Math.max(0, dataMin - (dataMax - dataMin) * 0.1);
+        var yMax = dataMax + (dataMax - dataMin) * 0.1;
+
+        function tx(t) { return ml + (t / maxT) * gW; }
+        function ty(v) { return mt + gH - ((v - yMin) / (yMax - yMin)) * gH; }
+
+        // Grid
+        ctx.strokeStyle = 'rgba(255,255,255,0.05)';
+        ctx.lineWidth = 1;
+        for (var gi = 0; gi <= 4; gi++) {
+            var gy = mt + (gi / 4) * gH;
+            ctx.beginPath(); ctx.moveTo(ml, gy); ctx.lineTo(ml + gW, gy); ctx.stroke();
+        }
+
+        // Data line
+        ctx.beginPath();
+        ctx.strokeStyle = color;
+        ctx.lineWidth = 1.5;
+        ctx.lineJoin = 'round';
+        samples.forEach(function (s, i) {
+            var x = tx(s.t), y = ty(s[field]);
+            if (i === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+        });
+        ctx.stroke();
+
+        // Y axis labels
+        ctx.font = '10px monospace';
+        ctx.textAlign = 'right';
+        ctx.fillStyle = color;
+        ctx.fillText(yMax.toFixed(field === 'v' ? 2 : 3), ml - 4, mt + 10);
+        ctx.fillStyle = 'rgba(234,240,255,0.35)';
+        ctx.fillText(yMin.toFixed(field === 'v' ? 2 : 3), ml - 4, mt + gH);
+
+        // X axis labels
+        ctx.textAlign = 'center';
+        ctx.fillStyle = 'rgba(234,240,255,0.35)';
+        [0, 0.25, 0.5, 0.75, 1.0].forEach(function (f) {
+            var lt = Math.round(maxT * f);
+            ctx.fillText(lt >= 1000 ? (lt / 1000).toFixed(1) + 's' : lt + 'ms', ml + f * gW, H - 4);
+        });
+
+        // Hover overlay
+        if (hover) {
+            // Find nearest sample by X position
+            var mouseX = hover.x;
+            var mouseY = hover.y;
+            var best = null, bestDist = Infinity;
+            samples.forEach(function (s) {
+                var sx = tx(s.t);
+                var d = Math.abs(sx - mouseX);
+                if (d < bestDist) { bestDist = d; best = s; }
+            });
+            if (best !== null) {
+                var bx = tx(best.t);
+                var by = ty(best[field]);
+                // Only show if mouse Y is within 20px of curve Y
+                if (Math.abs(mouseY - by) <= 20) {
+                    // Vertical dashed crosshair
+                    ctx.save();
+                    ctx.setLineDash([4, 3]);
+                    ctx.strokeStyle = 'rgba(255,255,255,0.3)';
+                    ctx.lineWidth = 1;
+                    ctx.beginPath();
+                    ctx.moveTo(bx, mt);
+                    ctx.lineTo(bx, mt + gH);
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+                    ctx.restore();
+
+                    // Dot on curve
+                    ctx.beginPath();
+                    ctx.arc(bx, by, 4, 0, Math.PI * 2);
+                    ctx.fillStyle = color;
+                    ctx.fill();
+                    ctx.strokeStyle = '#fff';
+                    ctx.lineWidth = 1.5;
+                    ctx.stroke();
+
+                    // Tooltip
+                    var decimals = field === 'v' ? 3 : 4;
+                    var unit = field === 'v' ? 'V' : 'A';
+                    var valStr = best[field].toFixed(decimals) + unit;
+                    var tMs = best.t;
+                    var timeStr = tMs >= 1000 ? (tMs / 1000).toFixed(2) + 's' : tMs + 'ms';
+                    var label = valStr + '  @' + timeStr;
+
+                    ctx.font = 'bold 11px monospace';
+                    var tw = ctx.measureText(label).width;
+                    var pad = 6;
+                    var bw = tw + pad * 2;
+                    var bh = 20;
+                    var tx2 = bx + 8;
+                    if (tx2 + bw > W - mr) tx2 = bx - bw - 8;
+                    var ty2 = by - bh / 2;
+                    if (ty2 < mt) ty2 = mt;
+                    if (ty2 + bh > mt + gH) ty2 = mt + gH - bh;
+
+                    ctx.fillStyle = 'rgba(18,20,32,0.88)';
+                    ctx.strokeStyle = color;
+                    ctx.lineWidth = 1.5;
+                    ctx.beginPath();
+                    ctx.roundRect(tx2, ty2, bw, bh, 4);
+                    ctx.fill();
+                    ctx.stroke();
+
+                    ctx.fillStyle = '#fff';
+                    ctx.textAlign = 'left';
+                    ctx.fillText(label, tx2 + pad, ty2 + bh - 5);
+                }
+            }
+        }
+    }
+
+    function attachDlHover(canvasId) {
+        var canvas = $('#' + canvasId);
+        if (!canvas || canvas.dataset.hoverAttached) return;
+        canvas.dataset.hoverAttached = '1';
+
+        function redraw(hover) {
+            var c = dlSamplesCache[canvasId];
+            if (!c) return;
+            drawDlSeries(canvasId, c.samples, c.field, c.color, hover);
+        }
+
+        canvas.addEventListener('mousemove', function (e) {
+            var rect = canvas.getBoundingClientRect();
+            redraw({ x: e.clientX - rect.left, y: e.clientY - rect.top });
+        });
+        canvas.addEventListener('mouseleave', function () {
+            redraw(null);
+        });
+    }
+
+    function startDlPoll() {
+        stopDlPoll();
+        if (!lastData) return;
+        Object.keys(lastData).forEach(function (id) { fetchAndDrawDl(id); });
+        dlPollTimer = setInterval(function () {
+            if (currentRoute !== 'datalogger') { stopDlPoll(); return; }
+            Object.keys(lastData || {}).forEach(function (id) { fetchAndDrawDl(id); });
+        }, 1000);
+    }
+
+    function stopDlPoll() {
+        if (dlPollTimer) { clearInterval(dlPollTimer); dlPollTimer = null; }
+    }
+
+    function updateDlSidebar() {
+        var psuList = Object.keys(lastData || {});
+        // Update the two known sidebar switches (a, b)
+        psuList.forEach(function (id) {
+            var st = dlStatus[id];
+            if (!st) return;
+            var sw = $('#dlSwitch' + id.toUpperCase());
+            var statEl = $('#dlStatus' + id.toUpperCase());
+            if (sw) sw.classList.toggle('on', st.enabled);
+            if (statEl) statEl.textContent = st.enabled ? (st.samples + ' samples') : 'Stopped';
+        });
+        // Update sidebar LOG pill
+        var anyLogging = Object.keys(dlStatus).some(function (id) { return dlStatus[id] && dlStatus[id].enabled; });
+        var pill = $('#pillLog');
+        if (pill) {
+            pill.textContent = anyLogging ? 'REC' : 'LOG';
+            pill.style.color = anyLogging ? 'var(--bad)' : '';
+            pill.style.borderColor = anyLogging ? 'rgba(255,77,109,.35)' : '';
+            pill.style.background = anyLogging ? 'rgba(255,77,109,.12)' : '';
+        }
     }
 
     // ==================== INFO PANEL ====================
@@ -421,6 +833,69 @@
             'Reset all settings to factory defaults. Cannot be undone.',
             '{}',
             'curl -X POST ' + base + '/api/psu/a/factory_reset');
+
+        // -- Sweep endpoints --
+        h += '<div style="height:12px;"></div>';
+        h += '<div class="section-title"><h2>Sweep Endpoints</h2></div>';
+
+        h += docEndpoint('GET', '/api/sweep',
+            'Returns sweep program and status for all PSUs.',
+            null,
+            'curl ' + base + '/api/sweep');
+
+        h += docEndpoint('GET', '/api/sweep/{id}',
+            'Returns sweep program and execution status for a single PSU.',
+            null,
+            'curl ' + base + '/api/sweep/a');
+
+        h += docEndpoint('POST', '/api/sweep/{id}/set',
+            'Upload a sweep program. Waypoints are sorted by time_ms. The PSU voltage steps to each value at the given elapsed time from sweep start.',
+            '{"points":[{"time_ms":0,"voltage":0},{"time_ms":2000,"voltage":5.0},{"time_ms":3500,"voltage":7.5},{"time_ms":12000,"voltage":3.0},{"time_ms":20000,"voltage":0}]}',
+            'curl -X POST -H "Content-Type: application/json" -d \'{"points":[{"time_ms":0,"voltage":0},{"time_ms":5000,"voltage":12.0}]}\' ' + base + '/api/sweep/a/set');
+
+        h += docEndpoint('POST', '/api/sweep/{id}/start',
+            'Start executing the uploaded sweep program. Ends automatically after the last waypoint.',
+            '{}',
+            'curl -X POST ' + base + '/api/sweep/a/start');
+
+        h += docEndpoint('POST', '/api/sweep/{id}/stop',
+            'Stop sweep execution immediately.',
+            '{}',
+            'curl -X POST ' + base + '/api/sweep/a/stop');
+
+        // -- Datalogger endpoints --
+        h += '<div style="height:12px;"></div>';
+        h += '<div class="section-title"><h2>Datalogger Endpoints</h2></div>';
+
+        h += docEndpoint('GET', '/api/datalog',
+            'Returns logging status (enabled, interval, sample count) for all PSUs.',
+            null,
+            'curl ' + base + '/api/datalog');
+
+        h += docEndpoint('GET', '/api/datalog/{id}',
+            'Returns all logged samples and status for a single PSU. Samples contain t (ms), v (V), i (A), p (W).',
+            null,
+            'curl ' + base + '/api/datalog/a');
+
+        h += docEndpoint('GET', '/api/datalog/{id}/csv',
+            'Download logged data as a CSV file. Columns: time_ms, voltage_V, current_A, power_W.',
+            null,
+            'curl -O psu_a_log.csv ' + base + '/api/datalog/a/csv');
+
+        h += docEndpoint('POST', '/api/datalog/{id}/start',
+            'Start logging for a PSU. interval_ms sets the sampling interval (min 100 ms, default 500 ms). Buffer holds up to 10 000 samples.',
+            '{"interval_ms": 500}',
+            'curl -X POST -H "Content-Type: application/json" -d \'{"interval_ms":250}\' ' + base + '/api/datalog/a/start');
+
+        h += docEndpoint('POST', '/api/datalog/{id}/stop',
+            'Stop logging for a PSU.',
+            '{}',
+            'curl -X POST ' + base + '/api/datalog/a/stop');
+
+        h += docEndpoint('POST', '/api/datalog/{id}/clear',
+            'Clear all logged samples for a PSU. Logging state is not affected.',
+            '{}',
+            'curl -X POST ' + base + '/api/datalog/a/clear');
 
         el.innerHTML = h;
     }
@@ -727,6 +1202,111 @@
             }
             return;
         }
+
+        // --- Sweep actions ---
+        if (act === 'sweep-add-row') {
+            if (!localSweepPrograms[psu]) localSweepPrograms[psu] = [];
+            var prog = localSweepPrograms[psu];
+            var lastT = prog.length ? prog[prog.length - 1].time_ms + 1000 : 0;
+            prog.push({ time_ms: lastT, voltage: 0 });
+            renderSweep();
+            return;
+        }
+        if (act === 'sweep-add-output') {
+            if (!localSweepPrograms[psu]) localSweepPrograms[psu] = [];
+            var prog = localSweepPrograms[psu];
+            var lastT = prog.length ? prog[prog.length - 1].time_ms + 1000 : 0;
+            var outVal = btn.getAttribute('data-output') === 'true';
+            prog.push({ time_ms: lastT, output: outVal });
+            renderSweep();
+            return;
+        }
+        if (act === 'sweep-del-row') {
+            var rowIdx = parseInt(btn.getAttribute('data-row'), 10);
+            if (localSweepPrograms[psu]) {
+                localSweepPrograms[psu].splice(rowIdx, 1);
+            }
+            renderSweep();
+            return;
+        }
+        if (act === 'sweep-save') {
+            // Flush all visible inputs into local state before sending
+            $$('[data-sp-psu="' + psu + '"]').forEach(function (inp) {
+                var row = parseInt(inp.getAttribute('data-sp-row'), 10);
+                var field = inp.getAttribute('data-sp-field');
+                if (localSweepPrograms[psu] && localSweepPrograms[psu][row] !== undefined) {
+                    var val = parseFloat(inp.value);
+                    localSweepPrograms[psu][row][field] = isNaN(val) ? 0 : (field === 'time_ms' ? Math.round(val) : val);
+                }
+            });
+            var pts = (localSweepPrograms[psu] || []).slice().sort(function (a, b) { return a.time_ms - b.time_ms; });
+            fetch('/api/sweep/' + psu + '/set', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ points: pts })
+            }).then(function (r) { return r.json(); }).then(function (d) {
+                if (d.success) { showToast('Sweep program saved', 'success'); }
+                else { showToast(d.error || 'Save failed', 'error'); }
+            }).catch(function () { showToast('Save failed', 'error'); });
+            return;
+        }
+        if (act === 'sweep-start') {
+            fetch('/api/sweep/' + psu + '/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+                .then(function (r) { return r.json(); }).then(function (d) {
+                    if (d.success) { showToast('Sweep started', 'success'); setTimeout(pollSweepStatus, 200); }
+                    else { showToast(d.error || 'Start failed', 'error'); }
+                });
+            return;
+        }
+        if (act === 'sweep-stop') {
+            fetch('/api/sweep/' + psu + '/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+                .then(function (r) { return r.json(); }).then(function (d) {
+                    if (d.success) { showToast('Sweep stopped', 'success'); setTimeout(pollSweepStatus, 200); }
+                    else { showToast(d.error || 'Stop failed', 'error'); }
+                });
+            return;
+        }
+
+        // --- Datalogger actions ---
+        if (act === 'dl-clear') {
+            fetch('/api/datalog/' + psu + '/clear', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+                .then(function (r) { return r.json(); }).then(function (d) {
+                    if (d.success) { showToast('Log cleared', 'success'); fetchAndDrawDl(psu); }
+                    else { showToast(d.error || 'Clear failed', 'error'); }
+                });
+            return;
+        }
+    });
+
+    // Datalogger sidebar switches
+    document.addEventListener('click', function (e) {
+        var sw = e.target.closest('.switch[data-dl-toggle]');
+        if (!sw) return;
+        e.preventDefault();
+        var psuId = sw.getAttribute('data-dl-toggle');
+        var isOn = sw.classList.contains('on');
+        if (isOn) {
+            fetch('/api/datalog/' + psuId + '/stop', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}' })
+                .then(function (r) { return r.json(); }).then(function (d) {
+                    if (d.success) {
+                        dlStatus[psuId] = dlStatus[psuId] || {};
+                        dlStatus[psuId].enabled = false;
+                        updateDlSidebar();
+                        showToast('Logging stopped for ' + psuId.toUpperCase(), 'success');
+                    }
+                });
+        } else {
+            fetch('/api/datalog/' + psuId + '/start', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ interval_ms: 500 }) })
+                .then(function (r) { return r.json(); }).then(function (d) {
+                    if (d.success) {
+                        dlStatus[psuId] = dlStatus[psuId] || {};
+                        dlStatus[psuId].enabled = true;
+                        updateDlSidebar();
+                        showToast('Logging started for ' + psuId.toUpperCase(), 'success');
+                    } else {
+                        showToast(d.error || 'Failed to start logging', 'error');
+                    }
+                });
+        }
     });
 
     // Toggle switches
@@ -791,6 +1371,8 @@
         renderKpis(data);
         renderChannels(data);
         updateMasterSwitch(data);
+        // Re-render active sub-panels if already on that route
+        if (currentRoute === 'datalogger') renderDatalogger();
     }
 
     function updateReadings(data) {
@@ -838,7 +1420,15 @@
                     fetchReadings(function (d) { updateReadings(d); poll(); });
                 }, refreshInterval);
             })();
-            fullRefreshTimer = setInterval(function () { fetchStatus(updateAll); }, 5000);
+            fullRefreshTimer = setInterval(function () {
+                fetchStatus(updateAll);
+                // Refresh sweep status when on sweep page
+                if (currentRoute === 'sweep') pollSweepStatus();
+                // Refresh datalogger sidebar status periodically
+                fetch('/api/datalog').then(function (r) { return r.json(); }).then(function (d) {
+                    Object.assign(dlStatus, d); updateDlSidebar();
+                }).catch(function () { });
+            }, 5000);
         }
     }
 
@@ -865,6 +1455,10 @@
         var rr = $('#refresh-rate'); if (rr) rr.addEventListener('change', function () { refreshInterval = parseInt(this.value, 10); startRefresh(); });
         // Initial fetch
         fetchStatus(function (data) { updateAll(data); });
+        // Load initial datalogger status for sidebar
+        fetch('/api/datalog').then(function (r) { return r.json(); }).then(function (d) {
+            Object.assign(dlStatus, d); updateDlSidebar();
+        }).catch(function () { });
         startRefresh();
     }
 

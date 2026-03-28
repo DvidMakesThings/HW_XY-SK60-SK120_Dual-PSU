@@ -6,6 +6,8 @@ from socketserver import ThreadingMixIn
 
 # Will be set by psu_controller.py before starting
 psus = {}
+sweep_manager = None
+datalogger = None
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 WEB_DIR = os.path.join(BASE_DIR, 'web')
 
@@ -23,6 +25,16 @@ class PSURequestHandler(BaseHTTPRequestHandler):
 
     def log_message(self, format, *args):
         pass  # suppress default logging
+
+    def _send_csv(self, csv_data, filename='data.csv'):
+        body = csv_data.encode('utf-8')
+        self.send_response(200)
+        self.send_header('Content-Type', 'text/csv')
+        self.send_header('Content-Disposition', 'attachment; filename="%s"' % filename)
+        self.send_header('Content-Length', str(len(body)))
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.end_headers()
+        self.wfile.write(body)
 
     def _send_json(self, data, status=200):
         body = json.dumps(data, indent=None, separators=(',', ':')).encode('ascii')
@@ -132,6 +144,53 @@ class PSURequestHandler(BaseHTTPRequestHandler):
                 'port': 161,
                 'base_oid': '1.3.6.1.4.1.99999.1',
             })
+
+        elif path == '/api/sweep':
+            if sweep_manager:
+                self._send_json(sweep_manager.get_status())
+            else:
+                self._send_error_json(503, 'Sweep manager not available')
+
+        elif path.startswith('/api/sweep/'):
+            parts = path.split('/')
+            if len(parts) >= 4:
+                psu_id = parts[3]
+                if sweep_manager:
+                    self._send_json(sweep_manager.get_status(psu_id))
+                else:
+                    self._send_error_json(503, 'Sweep manager not available')
+            else:
+                self._send_error_json(400, 'Missing PSU id')
+
+        elif path == '/api/datalog':
+            if datalogger:
+                self._send_json(datalogger.get_all_status())
+            else:
+                self._send_error_json(503, 'Datalogger not available')
+
+        elif path.startswith('/api/datalog/'):
+            parts = path.split('/')
+            if len(parts) >= 4:
+                psu_id = parts[3]
+                sub = parts[4] if len(parts) >= 5 else ''
+                if not datalogger:
+                    self._send_error_json(503, 'Datalogger not available')
+                    return
+                if sub == 'csv':
+                    csv_data, err = datalogger.get_csv(psu_id)
+                    if err:
+                        self._send_error_json(404, err)
+                    else:
+                        self._send_csv(csv_data, 'psu_%s_log.csv' % psu_id)
+                else:
+                    result, err = datalogger.get_data(psu_id)
+                    if err:
+                        self._send_error_json(404, err)
+                    else:
+                        self._send_json(result)
+            else:
+                self._send_error_json(400, 'Missing PSU id')
+
         else:
             self._send_error_json(404, 'Unknown API endpoint')
 
@@ -139,24 +198,41 @@ class PSURequestHandler(BaseHTTPRequestHandler):
 
     def do_POST(self):
         path = self.path.split('?')[0]
-        if not path.startswith('/api/psu/'):
-            self._send_error_json(404, 'Unknown endpoint')
-            return
-
-        parts = path.split('/')
-        if len(parts) < 5:
-            self._send_error_json(400, 'Missing action')
-            return
-
-        psu_id = parts[3]
-        action = parts[4]
-        psu = self._get_psu(psu_id)
-        if psu is None:
-            self._send_error_json(404, 'PSU not found')
-            return
-
         body = self._read_body()
-        self._route_api_post(psu, action, body)
+
+        if path.startswith('/api/psu/'):
+            parts = path.split('/')
+            if len(parts) < 5:
+                self._send_error_json(400, 'Missing action')
+                return
+            psu_id = parts[3]
+            action = parts[4]
+            psu = self._get_psu(psu_id)
+            if psu is None:
+                self._send_error_json(404, 'PSU not found')
+                return
+            self._route_api_post(psu, action, body)
+
+        elif path.startswith('/api/sweep/'):
+            parts = path.split('/')
+            if len(parts) < 5:
+                self._send_error_json(400, 'Missing action')
+                return
+            psu_id = parts[3]
+            action = parts[4]
+            self._route_sweep_post(psu_id, action, body)
+
+        elif path.startswith('/api/datalog/'):
+            parts = path.split('/')
+            if len(parts) < 5:
+                self._send_error_json(400, 'Missing action')
+                return
+            psu_id = parts[3]
+            action = parts[4]
+            self._route_datalog_post(psu_id, action, body)
+
+        else:
+            self._send_error_json(404, 'Unknown endpoint')
 
     def _route_api_post(self, psu, action, body):
         ok = False
@@ -257,6 +333,47 @@ class PSURequestHandler(BaseHTTPRequestHandler):
 
         self._send_json({'success': ok})
 
+    def _route_sweep_post(self, psu_id, action, body):
+        if not sweep_manager:
+            self._send_error_json(503, 'Sweep manager not available')
+            return
+        if action == 'set':
+            points = body.get('points')
+            if points is None or not isinstance(points, list):
+                self._send_error_json(400, 'Missing "points" list')
+                return
+            ok, err = sweep_manager.set_program(psu_id, points)
+        elif action == 'start':
+            ok, err = sweep_manager.start(psu_id)
+        elif action == 'stop':
+            ok, err = sweep_manager.stop(psu_id)
+        else:
+            self._send_error_json(404, 'Unknown sweep action: %s' % action)
+            return
+        if err:
+            self._send_json({'success': False, 'error': err})
+        else:
+            self._send_json({'success': ok})
+
+    def _route_datalog_post(self, psu_id, action, body):
+        if not datalogger:
+            self._send_error_json(503, 'Datalogger not available')
+            return
+        if action == 'start':
+            interval_ms = int(body.get('interval_ms', 500))
+            ok, err = datalogger.start(psu_id, interval_ms)
+        elif action == 'stop':
+            ok, err = datalogger.stop(psu_id)
+        elif action == 'clear':
+            ok, err = datalogger.clear(psu_id)
+        else:
+            self._send_error_json(404, 'Unknown datalog action: %s' % action)
+            return
+        if err:
+            self._send_json({'success': False, 'error': err})
+        else:
+            self._send_json({'success': ok})
+
     def do_OPTIONS(self):
         self.send_response(204)
         self.send_header('Access-Control-Allow-Origin', '*')
@@ -269,10 +386,15 @@ class ThreadingHTTPServer(ThreadingMixIn, HTTPServer):
     daemon_threads = True
 
 
-def start_web_server(host='0.0.0.0', port=8080, psu_dict=None):
-    global psus
+def start_web_server(host='0.0.0.0', port=8080, psu_dict=None,
+                     sweep_mgr=None, data_logger=None):
+    global psus, sweep_manager, datalogger
     if psu_dict:
         psus = psu_dict
+    if sweep_mgr:
+        sweep_manager = sweep_mgr
+    if data_logger:
+        datalogger = data_logger
     server = ThreadingHTTPServer((host, port), PSURequestHandler)
     print('[WEB] Listening on %s:%d' % (host, port))
     server.serve_forever()

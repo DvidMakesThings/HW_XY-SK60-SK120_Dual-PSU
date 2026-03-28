@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(where plink:*)",
+      "Bash(where pscp:*)",
+      "Bash(plink -batch -pw luckfox root@192.168.0.2 \"uname -a\")",
+      "Bash(curl -s -X POST -H \"Content-Type: application/json\" -d \"{}\" http://192.168.0.190:8080/api/datalog/a/stop)",
+      "Bash(curl -s http://192.168.0.190:8080/api/datalog)",
+      "Bash(curl -s -X POST -H \"Content-Type: application/json\" -d \"{}\" http://192.168.0.190:8080/api/sweep/a/start)",
+      "Bash(curl -s http://192.168.0.190:8080/api/sweep/a)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://192.168.0.190:8080/)",
+      "Bash(curl -s -o /dev/null -w \" app.js:%{http_code}\" http://192.168.0.190:8080/app.js)",
+      "Bash(curl -s -o /dev/null -w \" style.css:%{http_code}\" http://192.168.0.190:8080/style.css)",
+      "Bash(plink -batch -pw luckfox root@192.168.0.190 \"sh /etc/init.d/S99psucontroller restart && sleep 2 && tail -5 /var/log/psu_controller.log\")",
+      "Bash(pscp -pw luckfox \"g:\\\\_GitHub\\\\HW_XY-SK60-SK120_Dual-PSU\\\\src\\\\psu_controller\\\\web\\\\app.js\" root@192.168.0.190:/opt/psu_controller/web/)",
+      "Bash(plink -batch -pw luckfox root@192.168.0.190 \"sh /etc/init.d/S99psucontroller restart\")",
+      "Bash(pscp -pw luckfox \"g:\\\\_GitHub\\\\HW_XY-SK60-SK120_Dual-PSU\\\\src\\\\psu_controller\\\\sweep_manager.py\" root@192.168.0.190:/opt/psu_controller/)",
+      "Bash(pscp -pw luckfox \"g:\\\\_GitHub\\\\HW_XY-SK60-SK120_Dual-PSU\\\\src\\\\psu_controller\\\\web\\\\style.css\" root@192.168.0.190:/opt/psu_controller/web/)",
+      "Bash(plink -batch -pw luckfox root@192.168.0.190 \"sh /etc/init.d/S99psucontroller restart && sleep 2 && tail -3 /var/log/psu_controller.log\")",
+      "Bash(curl -s -X POST -H \"Content-Type: application/json\" -d \"{\"\"points\"\":[{\"\"time_ms\"\":0,\"\"output\"\":true},{\"\"time_ms\"\":500,\"\"voltage\"\":5.0},{\"\"time_ms\"\":3000,\"\"voltage\"\":0},{\"\"time_ms\"\":3500,\"\"output\"\":false}]}\" http://192.168.0.190:8080/api/sweep/a/set)",
+      "Bash(pscp -pw luckfox src/psu_controller/web/app.js root@192.168.0.190:/opt/psu_controller/web/app.js)"
+    ]
+  }
+}

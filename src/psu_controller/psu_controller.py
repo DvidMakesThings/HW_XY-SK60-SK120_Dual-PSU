@@ -13,6 +13,8 @@ from modbus_psu import ModbusPSU
 from web_server import start_web_server
 import web_server
 from snmp_agent import start_snmp_agent
+from sweep_manager import SweepManager
+from datalogger import DataLogger
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
@@ -64,6 +66,15 @@ def main():
     web_cfg = config.get('web', {})
     snmp_cfg = config.get('snmp', {})
 
+    # Initialize sweep manager and datalogger
+    sweep_mgr = SweepManager()
+    sweep_mgr.set_psus(psus)
+
+    data_logger = DataLogger()
+    data_logger.set_psus(psus)
+
+    print('[INIT] Sweep manager and datalogger ready')
+
     # Set PSU references in web server module
     web_server.psus = psus
 
@@ -94,6 +105,8 @@ def main():
         start_web_server(
             host=web_cfg.get('host', '0.0.0.0'),
             port=web_cfg.get('port', 8080),
+            sweep_mgr=sweep_mgr,
+            data_logger=data_logger,
         )
     except KeyboardInterrupt:
         print('\n[SHUTDOWN] Stopping...')

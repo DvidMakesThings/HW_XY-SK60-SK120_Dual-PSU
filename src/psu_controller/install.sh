@@ -16,7 +16,7 @@ echo ""
 echo "[1/4] Installing files to ${INSTALL_DIR} ..."
 mkdir -p "${INSTALL_DIR}/web"
 
-for f in psu_controller.py modbus_psu.py web_server.py snmp_agent.py config.json; do
+for f in psu_controller.py modbus_psu.py web_server.py snmp_agent.py sweep_manager.py datalogger.py config.json; do
     cp "${SCRIPT_DIR}/${f}" "${INSTALL_DIR}/${f}"
 done
 for f in index.html style.css app.js; do
