@@ -15,6 +15,7 @@
   - [Controller: Luckfox Pico Plus](#controller-luckfox-pico-plus-rv1106)
   - [Serial Interface & Wiring](#serial-interface--wiring)
   - [Enclosure](#enclosure)
+  - [Bill of Materials](#bill-of-materials)
 - [Software Architecture](#software-architecture)
 - [Web UI](#web-ui)
   - [Outputs](#outputs)
@@ -143,6 +144,24 @@ The system is built into a **10-inch, 1U rack enclosure** that is fully 3D print
 - **3D files:** `3D files/` contains STEP models for the body, lid, and full assembly with internal components
 - **Fastening:** designed for M3 hardware
 - Both PSU modules mount inside the body, with the Luckfox mounted to the lid or rear panel
+
+### Bill of Materials
+
+Parts used in the reference build. Prices are approximate at time of purchase.
+
+| Qty | Part | Unit Price | Link |
+|---|---|---|---|
+| 1 | Luckfox Pico Plus (RV1103) — SBC / controller | ~$20 | [luckfox.com](https://www.luckfox.com/EN-Luckfox-Pico-Plus) |
+| 2 | Sinilink XY-SK120 60V/12A buck-boost module | ~$26 | [amazon.com](https://www.amazon.com/Converter-Voltage-Adjustable-Supply-Display/dp/B0D9H3Z637?th=1) |
+| 1 | Mean Well LRS-75-12 — 12 V / 6 A PSU (logic power) | ~$14 | [amazon.com](https://a.co/d/09D2P6Ac) |
+| 4 | Banana jack panel mounts (binding posts) | ~$2 each | [amazon.de](https://www.amazon.de/dp/B09D725WSX) |
+| 1 | IEC 320 C14 panel-mount power inlet (4-pack) | ~$7/4 | [amazon.com](https://a.co/d/0aa4EqbB) |
+| 1 | Snap-in rocker switch (5-pack) | ~$7/5 | [amazon.com](https://a.co/d/00OINL1y) |
+| — | 14 AWG mains and DC wiring | — | — |
+
+**Total reference build cost: ~$95** (excluding 3D printing filament, M3 hardware, and connectors)
+
+> The XY-SK60 (6 A / 60 W) is a drop-in substitute for the XY-SK120 at lower cost (~$18) if you don't need 12 A output. Both are fully supported by this firmware.
 
 ---
 
