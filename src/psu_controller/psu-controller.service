@@ -1,0 +1,15 @@
+[Unit]
+Description=PSU Controller - XY-SK60 Web/SNMP Interface
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/psu_controller/psu_controller.py
+WorkingDirectory=/opt/psu_controller
+Restart=on-failure
+RestartSec=5
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

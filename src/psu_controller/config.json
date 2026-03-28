@@ -1,0 +1,26 @@
+{
+    "psus": {
+        "a": {
+            "port": "/dev/ttyS4",
+            "name": "PSU-A",
+            "baudrate": 115200,
+            "address": 1
+        },
+        "b": {
+            "port": "/dev/ttyS3",
+            "name": "PSU-B",
+            "baudrate": 115200,
+            "address": 1
+        }
+    },
+    "web": {
+        "host": "0.0.0.0",
+        "port": 8080
+    },
+    "snmp": {
+        "host": "0.0.0.0",
+        "port": 161,
+        "community": "public",
+        "write_community": "private"
+    }
+}

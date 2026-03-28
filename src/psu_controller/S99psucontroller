@@ -1,0 +1,55 @@
+#!/bin/sh
+# PSU Controller init script for Luckfox Pico Plus (BusyBox init)
+# Place in /etc/init.d/S99psucontroller
+
+DAEMON="/opt/psu_controller/psu_controller.py"
+PIDFILE="/var/run/psu_controller.pid"
+LOGFILE="/var/log/psu_controller.log"
+
+start() {
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "PSU Controller already running"
+        return 0
+    fi
+
+    # Ensure UART device nodes exist
+    [ -e /dev/ttyS3 ] || mknod /dev/ttyS3 c 4 67 2>/dev/null
+    [ -e /dev/ttyS4 ] || mknod /dev/ttyS4 c 4 68 2>/dev/null
+
+    echo "Starting PSU Controller..."
+    cd /opt/psu_controller
+    python3 -u psu_controller.py >> "$LOGFILE" 2>&1 &
+    echo $! > "$PIDFILE"
+    echo "Started (PID $(cat $PIDFILE))"
+}
+
+stop() {
+    if [ ! -f "$PIDFILE" ]; then
+        echo "PSU Controller not running"
+        return 0
+    fi
+    PID=$(cat "$PIDFILE")
+    echo "Stopping PSU Controller (PID $PID)..."
+    kill "$PID" 2>/dev/null
+    sleep 1
+    kill -9 "$PID" 2>/dev/null
+    rm -f "$PIDFILE"
+    echo "Stopped"
+}
+
+status() {
+    if [ -f "$PIDFILE" ] && kill -0 "$(cat "$PIDFILE")" 2>/dev/null; then
+        echo "PSU Controller running (PID $(cat $PIDFILE))"
+    else
+        echo "PSU Controller not running"
+        rm -f "$PIDFILE"
+    fi
+}
+
+case "$1" in
+    start)   start ;;
+    stop)    stop ;;
+    restart) stop; sleep 1; start ;;
+    status)  status ;;
+    *)       echo "Usage: $0 {start|stop|restart|status}"; exit 1 ;;
+esac
